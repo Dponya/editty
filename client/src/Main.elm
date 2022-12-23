@@ -1,5 +1,14 @@
 module Main exposing (..)
 
-import Html
+import Browser
+import Html.Styled exposing (toUnstyled)
 
-main = Html.text "hello"
+import Doc
+
+main : Program () Doc.Doc Doc.DocMsg
+main = Browser.element
+  { init = Doc.init
+  , update = Doc.update
+  , view = Doc.view >> toUnstyled
+  , subscriptions = Doc.subscriptions
+  }

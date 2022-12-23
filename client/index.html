@@ -1,0 +1,23 @@
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Main</title>
+  <script src="main.js"></script>
+</head>
+
+<body>
+  <div id="myapp"></div>
+  <script>
+  var app = Elm.Main.init({
+    node: document.getElementById('myapp')
+  });
+
+  var docTextarea = document.getElementById('docTextarea')
+
+  app.ports.cursorPosition.subscribe(function(_) {
+    app.ports.cursorPosReceiver.send(docTextarea.selectionStart)
+  });
+
+  </script>
+</body>
+</html>
