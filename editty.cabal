@@ -32,13 +32,45 @@ executable editty
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
     build-depends:    base ^>=4.16.3.0
+                    , document
+                    , websockets
     hs-source-dirs:   app
     default-language: Haskell2010
+    default-extensions: ConstraintKinds
+                        DeriveAnyClass
+                        DeriveGeneric
+                        DerivingStrategies
+                        GeneralizedNewtypeDeriving
+                        LambdaCase
+                        OverloadedStrings
+                        RecordWildCards
+                        OverloadedRecordDot
+                        ScopedTypeVariables
 
 library document
     hs-source-dirs: src
-    exposed-modules: Document
+    exposed-modules: Document.Change
+                     Document.Api
+    other-modules:    Document.OT
+                      Document.Db
+                      Document.App
     build-depends:    base ^>=4.16.3.0
                     , aeson
+                    , bytestring
                     , websockets
+                    , free
+                    , text
+                    , mtl
+                    , resource-pool
+                    , postgresql-simple
     default-language: Haskell2010
+    default-extensions: ConstraintKinds
+                        DeriveAnyClass
+                        DeriveGeneric
+                        DerivingStrategies
+                        GeneralizedNewtypeDeriving
+                        LambdaCase
+                        OverloadedStrings
+                        RecordWildCards
+                        OverloadedRecordDot
+                        ScopedTypeVariables
