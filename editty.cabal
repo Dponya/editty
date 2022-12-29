@@ -51,9 +51,9 @@ library document
     hs-source-dirs: src
     exposed-modules: Document.Change
                      Document.Api
+                     Document.Db
+                     Document.App
     other-modules:    Document.OT
-                      Document.Db
-                      Document.App
     build-depends:    base ^>=4.16.3.0
                     , aeson
                     , bytestring
@@ -63,6 +63,9 @@ library document
                     , mtl
                     , resource-pool
                     , postgresql-simple
+                    , uuid
+                    , uuid-types
+                    , time
     default-language: Haskell2010
     default-extensions: ConstraintKinds
                         DeriveAnyClass
@@ -74,3 +77,12 @@ library document
                         RecordWildCards
                         OverloadedRecordDot
                         ScopedTypeVariables
+
+test-suite document-test
+    hs-source-dirs: test
+    type: exitcode-stdio-1.0
+    ghc-options: -threaded -rtsopts -with-rtsopts=-N
+    main-is: Spec.hs
+    build-depends:  , base ^>=4.16.3.0
+                    , document
+                    , hspec

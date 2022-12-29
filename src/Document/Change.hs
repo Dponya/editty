@@ -1,54 +1,52 @@
-{-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE NoFieldSelectors #-}
 {-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE BlockArguments #-}
 
 
-module Document.Change(handle, Env(..), OpType) where
+module Document.Change(handle, Env(..), ChangeRes(..)) where
 
 import Control.Monad.Reader(asks)
 import Data.Aeson
 import GHC.Generics
 
 import Document.OT
-import Document.Db
-import Document.App (App(..))
+import Document.Db(DbPool, getPairOp, getDocument, pushPairOp)
+import Document.App (App(..), OpType(..), OpQueue(..))
+import Type.Reflection (Typeable)
+import Data.Function ((&))
 
-data OpType =
-    Insert
-      { word :: !String
-      , retainLength :: !Int
-      }
-  | Delete
-      { deleteLength :: !String
-      , retainLength :: !Int
-      } deriving stock Generic
-        deriving anyclass (ToJSON, FromJSON)
+import qualified Data.Text as T
+import qualified Document.App as App
 
-data Env = Env { pool :: DbPool }
+data Env = Env { pool :: !DbPool }
 
-handle :: OpType -> App Env ()
-handle d = do
-    env <- asks (.pool)
-    pure ()
+data ChangeRes
+  = Syncd Document
+  | ShouldWait
+  deriving (Show, Eq)
 
-{- handle ::  OpType -> IO Document
-handle _ = undefined  -}
+handle :: OpType -> App Env ChangeRes
+handle newCome = do
+  let op1 = initOperation newCome
+  doc <- getDocument 1
 
-{-
-  data OpType =
-      Insert word cursorPos
-    | Delete length cursorPos
---------------------------------------------------
-  op1 <- initOperation newcomeOp
-  op2 <- getPairOp
+  case doc of
+    Nothing -> undefined -- we don't have this feature right now
+    Just (App.Document _ docText) -> do
+      mOp <- getPairOp
 
-  let (op2', op1') = xform op2 op1
-  let (_, newDoc) = edit doc op2
+      case mOp of
+            Just queue ->
+              do let op2 = initOperation queue.op
+                 let (op2', op1') = xform op2 op1
+                 let (_, newDoc) = edit (T.unpack docText) op2
+                 pure $ Syncd newDoc
+            Nothing ->
+              do pushPairOp newCome
+                 pure ShouldWait
 
-  saveDoc doc
-
-  pure (newDoc)
--}
+initOperation :: OpType -> Operation
+initOperation (Insert w pos) = retain pos >> insert w
+initOperation (Delete len pos) = retain pos >> delete len 
