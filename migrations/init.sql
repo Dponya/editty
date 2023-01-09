@@ -1,19 +1,20 @@
-CREATE TABLE opQueue
+CREATE TABLE op_queue
 (
-    queueId UUID NOT NULL PRIMARY KEY,
-    createdAt timestamp with time zone NOT NULL,
-    processingStartedAt timestamp with time zone,
+    queue_id UUID NOT NULL PRIMARY KEY,
+    created_at timestamp with time zone NOT NULL,
+    processing_started_at timestamp with time zone,
     errors TEXT,
-    op json
+    pending_changes json
 );
 
-CREATE INDEX ix_opQueue on
-    opQueue (processingStartedAt, createdAt ASC)
-INCLUDE (queueId)
-WHERE processingStartedAt IS NULL;
+CREATE INDEX ix_op_queue on
+    op_queue (processing_started_at, created_at ASC)
+INCLUDE (queue_id)
+WHERE processing_started_at IS NULL;
 
 CREATE TABLE documents
 (
-    documentId serial PRIMARY KEY,
-    payload TEXT
+    document_id serial PRIMARY KEY,
+    payload TEXT,
+    revision_log json
 );

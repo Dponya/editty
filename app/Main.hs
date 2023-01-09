@@ -25,7 +25,7 @@ runServer :: Config -> IO ()
 runServer conf = do
   state <- newMVar Doc.Api.newServerState
   dbPool <- Doc.Db.initialisePool
-    "host=localhost port=5432 user=usr dbname=editty password=usr"
+    "host=localhost port=5432 user=usr dbname=editty password=mysecretpassword"
   let env = Doc.Api.Env
         { Doc.Api.state = state
         , Doc.Api.change = (Change.Env { Change.pool =  dbPool})

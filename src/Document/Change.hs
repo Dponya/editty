@@ -1,52 +1,89 @@
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE NoFieldSelectors #-}
-{-# LANGUAGE OverloadedRecordDot #-}
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE BlockArguments #-}
 
+module Document.Change where
 
-module Document.Change(handle, Env(..), ChangeRes(..)) where
-
-import Control.Monad.Reader(asks)
-import Data.Aeson
-import GHC.Generics
-
-import Document.OT
-import Document.Db(DbPool, getPairOp, getDocument, pushPairOp)
-import Document.App (App(..), OpType(..), OpQueue(..))
+import Data.Aeson.Types
+import Data.Text (Text)
+import Data.Aeson (FromJSON(..), Value(Object, String))
+import Data.Aeson.KeyMap (member)
+import GHC.Generics (Generic)
 import Type.Reflection (Typeable)
-import Data.Function ((&))
+import Control.Monad.Free (Free(Free))
 
 import qualified Data.Text as T
-import qualified Document.App as App
+import qualified Data.Aeson.KeyMap as KM
+
+import Document.App (App)
+import Document.Db
+    (DbPool, pushPairOp, getPairOp, getDocument, editDocument)
+import Document.Change.Data
+
+import qualified Document.OT as OT
 
 data Env = Env { pool :: !DbPool }
 
-data ChangeRes
-  = Syncd Document
-  | ShouldWait
-  deriving (Show, Eq)
+handle :: Operation -> App Env ChangeResult
+handle incoming =
+  withDocument 1 \(Document dId payload revLog) ->
+  pushPairOp incoming >>
+  withQueriedOperation \op ->
+  do let revs = newRevisions op revLog
+     if null revs
+      then do
+          let otOp = initOperation op payload
+          let newDoc = OT.edit otOp
+          _ <- editDocument (Document dId newDoc (incRev op : revLog))
+          pure $ buildResponse (incRev op)
+      else do
+          let xformedOp = againstAll op payload revs
+          let newDoc = OT.edit xformedOp
+          let fromOTOp = fromOT op.revision op.client xformedOp
+          _ <- editDocument (Document dId newDoc (incRev fromOTOp : revLog))
+          pure $ buildResponse (incRev fromOTOp)
+  where
+    newRevisions :: Operation -> [Operation] -> [Operation]
+    newRevisions op =
+      filter (\x -> x.revision >= op.revision)
 
-handle :: OpType -> App Env ChangeRes
-handle newCome = do
-  let op1 = initOperation newCome
-  doc <- getDocument 1
+withDocument :: Integer -> (Document -> App Env a) -> App Env a
+withDocument dId next = getDocument dId >>= \case
+  Nothing -> error "doc not found, not implemented branch"
+  Just doc -> next doc
 
-  case doc of
-    Nothing -> undefined -- we don't have this feature right now
-    Just (App.Document _ docText) -> do
-      mOp <- getPairOp
+withQueriedOperation :: (Operation -> App Env a) -> App Env a
+withQueriedOperation next = getPairOp >>= \case
+  Nothing -> error "queue is empty, not implemented branch"
+  Just op -> next op
 
-      case mOp of
-            Just queue ->
-              do let op2 = initOperation queue.op
-                 let (op2', op1') = xform op2 op1
-                 let (_, newDoc) = edit (T.unpack docText) op2
-                 pure $ Syncd newDoc
-            Nothing ->
-              do pushPairOp newCome
-                 pure ShouldWait
+incRev :: Operation -> Operation
+incRev Insert {..} = Insert word retainLen client (revision + 1)
+incRev Delete {..} = Delete delLen retainLen client (revision + 1)
 
-initOperation :: OpType -> Operation
-initOperation (Insert w pos) = retain pos >> insert w
-initOperation (Delete len pos) = retain pos >> delete len 
+buildResponse :: Operation -> ChangeResult
+buildResponse = \case
+    op@(Insert {..}) -> Result 
+      (Acknowledge revision client)
+      (ConsumeBroadcast op)
+    op@(Delete {..}) -> Result
+      (Acknowledge revision client)
+      (ConsumeBroadcast op)
+
+againstAll :: Operation
+  -> OT.Document
+  -> [Operation]
+  -> OT.Editor OT.Document
+againstAll op doc ops = foldl foldMapper mainOp initedOps
+  where
+    mainOp = initOperation op doc
+    initedOps = fmap (flip initOperation doc) ops
+    foldMapper x y = OT.xform x y
+
+initOperation :: Operation -> OT.Document -> OT.Editor OT.Document
+initOperation (Insert w pos _ _) doc = OT.insert pos w doc
+initOperation (Delete len pos _ _) doc = OT.delete pos len doc
+
+fromOT :: Integer -> Text -> OT.Editor OT.Document -> Operation
+fromOT rev client' (Free (OT.Insert pos w doc' _))
+  = Insert w pos client' rev
+fromOT rev client' (Free (OT.Delete pos delLen doc' _))
+  = Delete delLen pos client' rev

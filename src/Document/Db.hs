@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BlockArguments #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 
 module Document.Db
   ( WithDb
@@ -12,22 +13,27 @@ module Document.Db
   , createDocument
   , pushPairOp
   , cleanUpDocuments
+  , editDocument
   ) where
 
-import Control.Monad.Reader
+import Control.Monad.Reader (asks, MonadIO(..), MonadReader)
 import Data.ByteString (ByteString)
-import Data.Pool
+import Data.Pool (PoolConfig(PoolConfig))
+import Data.Time (getCurrentTime)
+import Data.Function ((&))
+import Data.UUID.V1 (nextUUID)
+import Data.List.NonEmpty (NonEmpty)
 import GHC.Records(HasField(..))
 import Database.PostgreSQL.Simple
+  (Only(Only), FromRow, Connection, Query)
+import Database.PostgreSQL.Simple.ToField (ToField)
 
 import qualified Data.Pool as Pool
 import qualified Database.PostgreSQL.Simple as Sql
-import Database.PostgreSQL.Simple.ToField (ToField)
 
-import Document.App(OpType, OpQueue, Document)
-import Data.Function ((&))
-import Data.UUID.V1 (nextUUID)
-import Data.Time (getCurrentTime)
+import Document.Change.Data (Operation, Document(..), OpQueue(..))
+
+
 
 type DbPool = Pool.Pool Sql.Connection
 
@@ -55,20 +61,38 @@ withPool action = do
     pool' <- asks(.pool)
     liftIO $ Pool.withResource pool' action
 
-getPairOp :: (WithDb env m) => m (Maybe OpQueue)
+cleanUpDocuments :: WithDb env m => m ()
+cleanUpDocuments = withPool quer >> pure ()
+  where
+    trunc = "TRUNCATE op_queue, documents;"
+          <> " ALTER SEQUENCE documents_document_id_seq RESTART WITH 1;"
+    quer = \conn -> Sql.execute_ conn trunc
+
+pushPairOp :: (WithDb env m) => Operation -> m Bool
+pushPairOp op = do
+  qId <- liftIO nextUUID
+  tmp <- liftIO getCurrentTime
+  res <- withPool (quer qId tmp)
+  if res == 1 then pure True else pure False
+  where
+    insert = "INSERT INTO op_queue (queue_id, created_at, pending_changes)"
+            <> " VALUES (?, ?, ?)"
+    quer qId tmp = \conn -> Sql.execute conn insert (qId, tmp, op)
+
+getPairOp :: WithDb env m => m (Maybe Operation)
 getPairOp = do
   res <- withPool quer
   pure case res of
-        (x:_) -> Just x
-        _ -> Nothing
+    [] -> Nothing
+    [x] -> Just $ pendingChanges x
   where
     update :: Query
-    update = "UPDATE opQueue as sq"
-        <> " SET processingStartedAt = ?"
-        <> " WHERE sq.queueId =" 
-        <> " (SELECT sqInner.queueId FROM opQueue as sqInner"
-              <> " WHERE sqInner.processingStartedAt IS NULL"
-              <> " ORDER By sqInner.createdAt"
+    update = "UPDATE op_queue as sq"
+        <> " SET processing_started_at = ?"
+        <> " WHERE sq.queue_id =" 
+        <> " (SELECT sqInner.queue_id FROM op_queue as sqInner"
+              <> " WHERE sqInner.processing_started_at IS NULL"
+              <> " ORDER By sqInner.created_at"
               <> " LIMIT 1"
               <> " FOR UPDATE)"
         <> "RETURNING *"
@@ -77,17 +101,6 @@ getPairOp = do
     quer :: Connection -> IO [OpQueue]
     quer = \conn -> Sql.query conn update (Only tmp)
 
-pushPairOp :: (WithDb env m) => OpType -> m Bool
-pushPairOp op = do
-  qId <- liftIO nextUUID
-  tmp <- liftIO getCurrentTime
-  res <- withPool (quer qId tmp)
-  if res == 1 then pure True else pure False
-  where
-    insert = "INSERT INTO opQueue (queueId, createdAt, op)"
-            <> " VALUES (?, ?, ?)"
-    quer qId tmp = \conn -> Sql.execute conn insert (qId, tmp, op)
-
 getDocument :: WithDb env m => Integer -> m (Maybe Document)
 getDocument dId = do
   res <- withPool quer
@@ -95,20 +108,21 @@ getDocument dId = do
         (x:_) -> Just x
         _ -> Nothing
   where
-    select = "SELECT * FROM documents WHERE documentId = ?"
+    select = "SELECT * FROM documents WHERE document_id = ?"
     quer = \conn -> Sql.query conn select (Only dId)
+
+editDocument :: WithDb env m => Document -> m Bool
+editDocument (Document dId txt revLog) = do
+  res <- withPool quer
+  if res == 1 then pure True else pure False
+  where
+    update = "UPDATE documents SET payload = ?, revision_log = ? WHERE document_id = ?"
+    quer = \conn -> Sql.execute conn update (txt, revLog, dId)
 
 createDocument :: WithDb env m => m Bool
 createDocument = do
   res <- withPool quer
   if res == 1 then pure True else pure False
   where
-    insert = "INSERT INTO documents (payload) VALUES (?)"
-    quer = \conn -> Sql.execute conn insert (Only ("" :: String))
-
-cleanUpDocuments :: WithDb env m => m ()
-cleanUpDocuments = withPool quer >> pure ()
-  where
-    trunc = "TRUNCATE opQueue, documents;"
-          <> " ALTER SEQUENCE documents_documentId_seq RESTART WITH 1;"
-    quer = \conn -> Sql.execute_ conn trunc
+    insert = "INSERT INTO documents (payload, revision_log) VALUES (?, ?)"
+    quer = \conn -> Sql.execute conn insert (("" :: String, [] :: [Operation]))

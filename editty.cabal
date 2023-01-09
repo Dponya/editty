@@ -50,6 +50,7 @@ executable editty
 library document
     hs-source-dirs: src
     exposed-modules: Document.Change
+                     Document.Change.Data
                      Document.Api
                      Document.Db
                      Document.App
@@ -86,3 +87,4 @@ test-suite document-test
     build-depends:  , base ^>=4.16.3.0
                     , document
                     , hspec
+                    , text

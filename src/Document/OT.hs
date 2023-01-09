@@ -1,151 +1,103 @@
 {-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 
-module Document.OT
-    ( delete
-    , insert
-    , retain
-    , edit
-    , xform
-    , Operation
-    , Document
-    ) where
+{-|
+Module      : Document.OT
+Description : Operational Transformation
+Copyright   : (c) Yerbol Altynbek, 2023
+Maintainer  : ealtynbek089@gmail.com
 
-import Data.List (splitAt)
-import Control.Monad
-import Control.Monad.Free
-import Control.Comonad.Cofree
-import Data.Monoid
-import Data.Ord
+Implements a Operational Transformation algorithm
+-}
+module Document.OT where
 
-type Document = String
 
--- | The language of document operations
-data OperationGrammar k
-    = Insert String k
-    | Delete Int k
-    | Retain Int k
-    deriving (Show,Functor)
+import Data.Text (Text)
+import Control.Monad.Free (Free(..), liftF, foldFree)
+import Control.Monad.Identity (Identity (runIdentity))
+import Control.Monad.Trans.Free (runFree)
 
--- | Operations to be performed on a document
-type Operation = Free OperationGrammar ()
+import qualified Data.Text as T
 
-instance Semigroup (Free OperationGrammar ()) where
-  (<>) = (>>)
+-- | The `Ops` data type represents the operations of the editor for the resolution of conflicts
+-- with Operational Transformation algorithm. Type constructor Ops take one argument which is
+-- a continuation of computing.
+data Ops k =
+  -- | Insert takes one argument of type `Int` that represents a retaining(position)
+  -- in the second argument it takes a word to insert of type 'Text'.
+  -- in the third argument it takes a `Document`.	
+    Insert Int Text Document (Text -> k)
+  -- | Delete takes one argument of type `Int` that represents a retaining(position)
+  -- in the second arguments it takes a delete's length
+  -- in the third argument it takes a `Document`.
+  | Delete Int Int Document (Text -> k)
+  deriving Functor
 
--- | Operations may be composed!
-instance Monoid (Free OperationGrammar ()) where
-  mempty = return ()
+-- | Free monadic computation describing. Takes only one argument, that represents
+-- a final result
+type Editor a = Free Ops a
 
--- | Transform two operations into a pair of rebased operations
-xform :: Operation -> Operation -> (Operation, Operation)
-xform a b = go a b (return (), return ())
+-- | Document type, that represents a plain `Text`
+type Document = Text
+
+-- | Domain function that will insert a word by consumed position to selected `Document`.
+insert :: Int -> Text -> Document -> Editor Document
+insert pos word doc = liftF $ Insert pos word doc id
+
+-- | Domain function that will delete a length of characters
+-- determined by the second argument of type `Int` and starts deletion from a position
+-- that will be passed to the first argument
+delete :: Int -> Int -> Document -> Editor Document
+delete pos delLen doc = liftF $ Delete pos delLen doc id
+
+-- | Function that will apply all operations that was passed to first argument
+edit :: Editor Document -> Document
+edit doc = runIdentity $ foldFree go doc
   where
-    go (Pure ()) (Pure()) result = result
+    go :: Ops a -> Identity a
+    go = \case
+            Insert pos word doc next -> do
+              let (pre, post) = T.splitAt pos doc
+              let doc' = pre <> word <> post
+              pure $ next doc'
+            Delete pos delLen doc next -> do
+              let (pre, post) = T.splitAt pos doc
+              let newDoc = pre <> T.drop delLen post
+              pure $ next newDoc
 
-    -- Handle any insertions first
-    go (Free (Insert s k)) b (a', b') =
-        go k b (a' <> insert s ,  b' <> retain (length s))
-    go a (Free (Insert s k)) (a', b') =
-        go a k (a' <> retain (length s) , b' <> insert s)
+-- | `xform` will resolve a potential conflict between two operations. The first argument will be
+-- transformed against the second one.
+xform :: Editor Document
+  -> Editor Document
+  -> Editor Document
 
-    -- Four more cases!
-    go a b (a', b') = case (a, b) of
-        -- Retain / Retain
-        (Free (Retain n1 k1), Free (Retain n2 k2)) ->
-            let ops minl = (a' <> retain minl, b' <> retain minl)
-            in  case compare n1 n2 of
-                EQ -> go k1 k2 $ ops n2
-                GT -> go (Free (Retain (n1 - n2) k1)) k2 $ ops n2
-                LT -> go k1 (Free (Retain (n2 - n1) k2)) $ ops n1
+-- Insert / Insert
+xform
+  op1@(Free (Insert pos word doc n))
+  op2@(Free (Insert pos' word' doc' n')) =
+    if pos < pos'
+    then op1 else Free (Insert (pos + T.length word') word doc n)
 
-        -- Delete / Delete
-        (Free (Delete n1 k1), Free (Delete n2 k2)) ->
-            case compare n1 n2 of
-                EQ -> go k1 k2 (a', b')
-                GT -> go (Free (Delete (n1 - n2) k1)) k2 (a', b')
-                LT -> go k1 (Free (Delete (n2 - n1) k2)) (a', b')
+-- Insert / Delete
+xform
+  op1@(Free (Insert pos word doc n))
+  op2@(Free (Delete pos' delLen doc' n')) =
+    if pos < pos'
+      then op1
+      else Free (Insert (pos - delLen) word doc n)
 
-        -- Delete / Retain
-        (Free (Delete n1 k1), Free (Retain n2 k2)) ->
-            let ops minl = (a' >> delete minl, b')
-            in  case compare n1 n2 of
-                EQ -> go k1 k2 $ ops n2
-                GT -> go (Free (Delete (n1 - n2) k1)) k2 $ ops n2
-                LT -> go k1 (Free (Retain (n2 - n1) k2)) $ ops n1
+-- Delete / Insert
+xform
+  op1@(Free (Delete pos delLen doc n))
+  op2@(Free (Insert pos' word doc' n')) =
+    if pos < pos'
+      then op1
+      else Free (Delete (pos + T.length word) delLen doc n)
 
-        -- Retain / Delete
-        (Free (Retain n1 k1), Free (Delete n2 k2)) ->
-            let ops minl = (a', b' >> delete minl)
-            in  case compare n1 n2 of
-                EQ -> go k1 k2 $ ops n2
-                GT -> go (Free (Retain (n1 - n2) k1)) k2 $ ops n2
-                LT -> go k1 (Free (Delete (n2 - n1) k2)) $ ops n1
-
-
--- ** Document operations.
-
-insert :: String -> Operation
-insert str = liftF $ Insert str ()
-
-delete :: Int -> Operation
-delete str = liftF $ Delete str ()
-
-retain :: Int -> Operation
-retain n = liftF $ Retain n ()
-
-data CursorF k = CursorF
-    { insertH :: String -> k
-    , deleteH :: Int -> k
-    , retainH :: Int -> k
-    } deriving (Functor)
-
--- | Where 'Op'erations happen
-type Cursor = Cofree CursorF
-
--- | A cursor pointing to a specific character in a 'Document'
-type Editor = Cursor (Int, Document)
-
--- ** Handlers for document operations.
-
-coInsert :: (Int, Document) -> String -> (Int, Document)
-coInsert (idx, doc) str = (idx', doc') where
-    idx' = idx + length str
-    doc' = pre ++ str ++ post
-    (pre,post) = splitAt idx doc
-
-coDelete :: (Int, Document) -> Int -> (Int, Document)
-coDelete (idx, doc) n = (idx, doc') where
-    doc' = pre ++ (drop n post)
-    (pre,post) = splitAt idx doc
-
-coRetain :: (Int, Document) -> Int -> (Int, Document)
-coRetain (idx, doc) n = (idx+n,doc)
-
-newEditor :: (Int, Document) -> Editor
-newEditor start = coiter next start where
-    next w = CursorF
-                (coInsert w)
-                (coDelete w)
-                (coRetain w)
-
-class (Functor f, Functor g) => Run f g where
-    run :: (a -> b -> r) -> f a -> g b -> r
-
-instance Run f g => Run (Cofree f) (Free g) where
-    run p (a :<  _) (Pure x) = p a x
-    run p (_ :< fs) (Free gs) = run (run p) fs gs
-
-instance Run CursorF OperationGrammar where
-    run f (CursorF i _ _) (Insert s k) = f (i s) k
-    run f (CursorF _ d _) (Delete s k) = f (d s) k
-    run f (CursorF _ _ r) (Retain n k)      = f (r n) k
-
--- | Construct an initial document using the supplied operations
-buildDocument :: Operation -> (Int, Document)
-buildDocument = edit ""
-
--- | Edit an existing document with the supplied operations
-edit :: Document -> Operation -> (Int, Document)
-edit doc ops = run const (newEditor (0,doc)) ops
+-- Delete / Delete
+xform
+  op1@(Free (Delete pos delLen doc n))
+  op2@(Free (Delete pos' delLen' doc' n'))
+      | pos < pos' = op1
+      | pos > pos' = Free (Delete (pos - delLen') delLen doc n)
+      | otherwise = op1
