@@ -4,6 +4,14 @@
 {-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 
+{-|
+Module      : Document.Db
+Description : Db functions
+Copyright   : (c) Yerbol Altynbek, 2023
+Maintainer  : ealtynbek089@gmail.com
+
+Implements a db functions for document processing
+-}
 module Document.Db
   ( WithDb
   , DbPool
@@ -19,7 +27,7 @@ module Document.Db
 import Control.Monad.Reader (asks, MonadIO(..), MonadReader)
 import Data.ByteString (ByteString)
 import Data.Pool (PoolConfig(PoolConfig))
-import Data.Time (getCurrentTime)
+import Data.Time (getCurrentTime, UTCTime (UTCTime))
 import Data.Function ((&))
 import Data.UUID.V1 (nextUUID)
 import Data.List.NonEmpty (NonEmpty)
@@ -34,12 +42,15 @@ import qualified Database.PostgreSQL.Simple as Sql
 import Document.Change.Data (Operation, Document(..), OpQueue(..))
 
 
-
+-- | DbPool type alias for constraint using or for typing env record fields.
 type DbPool = Pool.Pool Sql.Connection
 
+-- | `WithDb` is a constraint for querying a DbPool from environments.
 type WithDb env m =
   (HasField "pool" env DbPool, MonadReader env m, MonadIO m)
 
+-- | `initialisePool` is a function for creating a db pool. Accepts credentials
+-- in `ByteString` for connecting to db.
 initialisePool :: ByteString -> IO DbPool
 initialisePool credentials = Pool.newPool poolConf
   where
@@ -49,6 +60,7 @@ initialisePool credentials = Pool.newPool poolConf
       10
       5
 
+-- | `queryRaw` helper functon for querying a raws without any params.
 queryRaw
     :: forall res env m.
        (WithDb env m , FromRow res)
@@ -56,11 +68,13 @@ queryRaw
     -> m [res]
 queryRaw q = withPool $ \conn -> Sql.query_ conn q
 
-withPool :: (WithDb env m) => (Sql.Connection -> IO b) -> m b
+-- | Function to process a query with pool.
+withPool :: WithDb env m => (Sql.Connection -> IO b) -> m b
 withPool action = do
     pool' <- asks(.pool)
     liftIO $ Pool.withResource pool' action
 
+-- | Truncating and cleaning all sequences in db. Used in integration tests
 cleanUpDocuments :: WithDb env m => m ()
 cleanUpDocuments = withPool quer >> pure ()
   where
@@ -68,6 +82,7 @@ cleanUpDocuments = withPool quer >> pure ()
           <> " ALTER SEQUENCE documents_document_id_seq RESTART WITH 1;"
     quer = \conn -> Sql.execute_ conn trunc
 
+-- | Pushing operation to queue
 pushPairOp :: (WithDb env m) => Operation -> m Bool
 pushPairOp op = do
   qId <- liftIO nextUUID
@@ -79,9 +94,11 @@ pushPairOp op = do
             <> " VALUES (?, ?, ?)"
     quer qId tmp = \conn -> Sql.execute conn insert (qId, tmp, op)
 
+-- | Getting operation from queue.
 getPairOp :: WithDb env m => m (Maybe Operation)
 getPairOp = do
-  res <- withPool quer
+  time <- liftIO getCurrentTime
+  res <- withPool (quer time)
   pure case res of
     [] -> Nothing
     [x] -> Just $ pendingChanges x
@@ -96,11 +113,10 @@ getPairOp = do
               <> " LIMIT 1"
               <> " FOR UPDATE)"
         <> "RETURNING *"
-    tmp :: String
-    tmp = "2021-09-07 15:52:42.123"
-    quer :: Connection -> IO [OpQueue]
-    quer = \conn -> Sql.query conn update (Only tmp)
+    quer :: UTCTime -> Connection -> IO [OpQueue]
+    quer time = \conn -> Sql.query conn update (Only time)
 
+-- | Document querying by Id in first argument.
 getDocument :: WithDb env m => Integer -> m (Maybe Document)
 getDocument dId = do
   res <- withPool quer
@@ -111,6 +127,7 @@ getDocument dId = do
     select = "SELECT * FROM documents WHERE document_id = ?"
     quer = \conn -> Sql.query conn select (Only dId)
 
+-- | Document editting. Accepts whole `Document` to process a query.
 editDocument :: WithDb env m => Document -> m Bool
 editDocument (Document dId txt revLog) = do
   res <- withPool quer
@@ -119,6 +136,7 @@ editDocument (Document dId txt revLog) = do
     update = "UPDATE documents SET payload = ?, revision_log = ? WHERE document_id = ?"
     quer = \conn -> Sql.execute conn update (txt, revLog, dId)
 
+-- | Creates document with empty revision log and empty payload.
 createDocument :: WithDb env m => m Bool
 createDocument = do
   res <- withPool quer

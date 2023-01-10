@@ -2,6 +2,14 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedRecordDot #-}
 
+{-|
+Module      : Document.Change.Data
+Description : Datatypes and instances
+Copyright   : (c) Yerbol Altynbek, 2023
+Maintainer  : ealtynbek089@gmail.com
+
+Implements a data types of `Document.Change` and instances of typeclasses for them
+-}
 module Document.Change.Data where
 
 import Data.Aeson.Types
@@ -22,35 +30,42 @@ import Database.PostgreSQL.Simple (FromRow)
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.Text as T
 
-
+-- | `Operation` is responsible for storing requests from `Document.Api` and
+-- transporting them to `Document.Change`.
 data Operation =
     Insert
-    { word :: Text
-    , retainLen :: Int
-    , client :: Text
-    , revision :: Integer
+    { word :: Text -- ^ word field stores chars to insert
+    , retainLen :: Int -- ^ retainLen stores number of chars to skip before insertion
+    , client :: Text -- ^ client's name
+    , revision :: Integer -- ^ revision is a version of each node(client). Revision helps to
+                          -- determine which node is concurrent with other nodes.
     }
   | Delete
-    { delLen :: Int
+    { delLen :: Int -- ^ number of chars to delete
     , retainLen :: Int
     , client :: Text
     , revision :: Integer
     }
   deriving stock (Typeable, Generic, Show, Eq)
 
+-- | Data type used to response author of operation with success acknowledgement.
 data ProducerAcknowledgement =
   Acknowledge { revision :: Integer, client :: Text }
     deriving stock (Eq, Show)
 
+-- | Newtype for more readability. Wraps `Operation` and stores it for consumers
 newtype ConsumeBroadcast = ConsumeBroadcast
   { op :: Operation } deriving stock (Eq, Show)
 
+-- | Result of document changing.
 data ChangeResult =
   Result
     { acknowledgement :: ProducerAcknowledgement
     , consumers :: ConsumeBroadcast
     } deriving stock (Eq, Show)
 
+-- | Queue that stores pedningChanges of type `Operation`. Each `Operation`
+-- have queueId and processingStartedAt and createdAt fields. 
 data OpQueue
   = OpQueue
     { queueId :: !UUID
@@ -61,6 +76,7 @@ data OpQueue
     } deriving stock (Generic)
       deriving anyclass (FromRow)
 
+-- | Document represenation that stores history of operations and payload with Id.
 data Document = Document
   { documentId :: Integer
   , payload :: Text

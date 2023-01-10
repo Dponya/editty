@@ -1,5 +1,13 @@
 {-# LANGUAGE BlockArguments #-}
 
+{-|
+Module      : Document.Change
+Description : Handler of document changes
+Copyright   : (c) Yerbol Altynbek, 2023
+Maintainer  : ealtynbek089@gmail.com
+
+Implements a handler of document changes
+-}
 module Document.Change where
 
 import Data.Aeson.Types
@@ -22,6 +30,11 @@ import qualified Document.OT as OT
 
 data Env = Env { pool :: !DbPool }
 
+-- | `handle` is a use-case of document changes. Accepts `Operation`
+-- and handles two scenarios: in first, `handle` procceses a change as a normally
+-- without any conflict resolution, because there's no conflicts with history of changes
+-- in revision log. In second, if revision log has conflict with current operation, `handle`
+-- will resolve this conflict.
 handle :: Operation -> App Env ChangeResult
 handle incoming =
   withDocument 1 \(Document dId payload revLog) ->
@@ -45,20 +58,27 @@ handle incoming =
     newRevisions op =
       filter (\x -> x.revision >= op.revision)
 
+-- | `withDocument` helps with querying a document to work with. Accepts and id of document
+-- of type `Integer` and continuation of computing in second argument.
 withDocument :: Integer -> (Document -> App Env a) -> App Env a
 withDocument dId next = getDocument dId >>= \case
   Nothing -> error "doc not found, not implemented branch"
   Just doc -> next doc
 
+-- | `withQueriedOperation` helps with querying a operation from operation queue.
+-- Accepts just a next continuation.
 withQueriedOperation :: (Operation -> App Env a) -> App Env a
 withQueriedOperation next = getPairOp >>= \case
   Nothing -> error "queue is empty, not implemented branch"
   Just op -> next op
 
+-- | `incRev` function accepts operation to increment his revision id to next value
 incRev :: Operation -> Operation
 incRev Insert {..} = Insert word retainLen client (revision + 1)
 incRev Delete {..} = Delete delLen retainLen client (revision + 1)
 
+-- | `buildResponse` function will build a response of type `ChangeResult`
+-- by using `Operation`.
 buildResponse :: Operation -> ChangeResult
 buildResponse = \case
     op@(Insert {..}) -> Result 
@@ -68,6 +88,9 @@ buildResponse = \case
       (Acknowledge revision client)
       (ConsumeBroadcast op)
 
+-- | `againstAll` will transform `Operation` in first argument against
+-- bunch of `[Operation]` passed in third argument. Also, accepts a `OT.Document`
+-- from `Document.OT`
 againstAll :: Operation
   -> OT.Document
   -> [Operation]
@@ -78,10 +101,14 @@ againstAll op doc ops = foldl foldMapper mainOp initedOps
     initedOps = fmap (flip initOperation doc) ops
     foldMapper x y = OT.xform x y
 
+-- | `initOperation` just a function to translate `Operation` to domain language
+-- of `Document.OT`
 initOperation :: Operation -> OT.Document -> OT.Editor OT.Document
 initOperation (Insert w pos _ _) doc = OT.insert pos w doc
 initOperation (Delete len pos _ _) doc = OT.delete pos len doc
 
+-- | `fromOT` reverse function of `initOperation`. Accepts revision in first argument
+-- and client's name in second argument.
 fromOT :: Integer -> Text -> OT.Editor OT.Document -> Operation
 fromOT rev client' (Free (OT.Insert pos w doc' _))
   = Insert w pos client' rev

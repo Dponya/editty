@@ -1,3 +1,11 @@
+{-|
+Module      : Document.App
+Description : Application monad
+Copyright   : (c) Yerbol Altynbek, 2023
+Maintainer  : ealtynbek089@gmail.com
+
+Implements a main type of application
+-}
 module Document.App 
   ( App
   , runApp
