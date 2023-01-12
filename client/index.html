@@ -14,8 +14,53 @@
 
   var docTextarea = document.getElementById('docTextarea')
 
-  app.ports.cursorPosition.subscribe(function(_) {
-    app.ports.cursorPosReceiver.send(docTextarea.selectionStart)
+  class CursorPosition extends HTMLElement {
+    #cursorPos = 0
+    constructor() {
+      super()
+    }
+
+    get cursorPos() {
+      return this.#cursorPos
+    }
+
+    set cursorPos(val) {
+      this.#cursorPos = val
+    }
+
+    connectedCallback() {
+      docTextarea.addEventListener('input', (event) => {
+        this.cursorPos = docTextarea.selectionStart
+        // console.log(this.cursorPos)
+        this.dispatchEvent(
+            new CustomEvent("cursorMoved",
+              { bubbles: false, 
+                detail: { cursorPos: this.cursorPos }
+              })
+        )
+      })
+    }
+  }
+
+  customElements.define("cursor-position-checker", CursorPosition)
+
+  var socket = new WebSocket('ws://localhost:9160');
+
+  socket.addEventListener("open", function(event) {
+    socket.send("Alice")
+  })
+  // When a command goes to the `sendMessage` port, we pass the message
+  // along to the WebSocket.
+  app.ports.sendMessage.subscribe(function(message) {
+      socket.send(JSON.stringify(message));
+  });
+
+  // When a message comes into our WebSocket, we pass the message along
+  // to the `messageReceiver` port.
+  socket.addEventListener("message", function(event) {
+      const unserialized = JSON.parse(event.data)
+      console.log({ unserialized })
+        app.ports.messageReceiver.send(unserialized);
   });
 
   </script>

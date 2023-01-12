@@ -55,6 +55,9 @@ numClients = length
 addClient :: Client -> ServerState -> ServerState
 addClient client clients = client : clients
 
+removeClient :: Client -> ServerState -> ServerState
+removeClient (name, conn) clients = filter (\(n, c) -> n /= name) clients 
+
 data Env = Env
     { change :: !Change.Env
     , state :: !(MVar ServerState)
@@ -68,15 +71,15 @@ serveWS env pending = do
     WS.withPingThread conn 30 (return ()) do
         (msg :: Text) <- WS.receiveData conn
         clients <- readMVar env.state
-        flip finally disconnect do
+        flip finally (disconnect (msg, conn) env.state) do
             modifyMVar_ env.state \s -> do
                 let s' = addClient (msg, conn) s
-                broadcast (encode msg <> " joined") s'
+                broadcast (encode (msg <> " joined")) s'
                 pure s'
             receiveOps env (msg, conn) env.state
-            WS.sendTextData conn (encode msg <> " From server!")
     where
-        disconnect = pure ()
+        disconnect client state = do
+          modifyMVar_ state $ pure . removeClient client
 
 -- | `broadcast` is general function for streaming data to clients.
 broadcast :: ByteString -> ServerState -> IO ()
