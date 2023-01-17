@@ -44,14 +44,12 @@
 
   customElements.define("cursor-position-checker", CursorPosition)
 
-  var socket = new WebSocket('ws://localhost:9160');
+  var socket = new WebSocket('wss://f17a-95-56-199-218.eu.ngrok.io');
 
-  socket.addEventListener("open", function(event) {
-    socket.send("Alice")
-  })
   // When a command goes to the `sendMessage` port, we pass the message
   // along to the WebSocket.
   app.ports.sendMessage.subscribe(function(message) {
+      console.log({ message })
       socket.send(JSON.stringify(message));
   });
 
@@ -60,6 +58,7 @@
   socket.addEventListener("message", function(event) {
       const unserialized = JSON.parse(event.data)
       console.log({ unserialized })
+      if (unserialized instanceof Object)
         app.ports.messageReceiver.send(unserialized);
   });
 
