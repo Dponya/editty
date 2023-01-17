@@ -39,7 +39,7 @@ import Database.PostgreSQL.Simple.ToField (ToField)
 import qualified Data.Pool as Pool
 import qualified Database.PostgreSQL.Simple as Sql
 
-import Document.Change.Data (Operation, Document(..), OpQueue(..))
+import Document.Data (Operation, Document(..), OpQueue(..))
 
 
 -- | DbPool type alias for constraint using or for typing env record fields.

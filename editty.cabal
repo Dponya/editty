@@ -34,6 +34,8 @@ executable editty
     build-depends:    base ^>=4.16.3.0
                     , document
                     , websockets
+                    , scotty
+                    , warp
     hs-source-dirs:   app
     default-language: Haskell2010
     default-extensions: ConstraintKinds
@@ -50,7 +52,8 @@ executable editty
 library document
     hs-source-dirs: src
     exposed-modules: Document.Change
-                     Document.Change.Data
+                     Document.Get
+                     Document.Data
                      Document.Api
                      Document.Db
                      Document.App
@@ -67,6 +70,7 @@ library document
                     , uuid
                     , uuid-types
                     , time
+                    , scotty
     default-language: Haskell2010
     default-extensions: ConstraintKinds
                         DeriveAnyClass

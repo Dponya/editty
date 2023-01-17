@@ -24,7 +24,7 @@ import qualified Data.Aeson.KeyMap as KM
 import Document.App (App)
 import Document.Db
     (DbPool, pushPairOp, getPairOp, getDocument, editDocument)
-import Document.Change.Data
+import Document.Data
 
 import qualified Document.OT as OT
 
@@ -56,7 +56,7 @@ handle incoming =
   where
     newRevisions :: Operation -> [Operation] -> [Operation]
     newRevisions op =
-      filter (\x -> x.revision >= op.revision)
+      filter (\x -> x.revision > op.revision)
 
 -- | `withDocument` helps with querying a document to work with. Accepts and id of document
 -- of type `Integer` and continuation of computing in second argument.
