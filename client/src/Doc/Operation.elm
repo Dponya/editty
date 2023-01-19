@@ -50,6 +50,12 @@ cursorPosition op = case op of
   Insert _ pos -> pos
   Delete _ pos -> pos
 
+insert : String -> Int -> Operation
+insert = Insert
+
+delete : Int -> Int -> Operation
+delete = Delete
+
 splitAt : Int -> String -> (String, String)
 splitAt n ls =
   let remain = String.length ls - n
@@ -72,18 +78,18 @@ encodeOperation op rev client = case op of
     , ("revision", Json.Encode.int rev)
     ]
 
-decodeInsert : Decoder Operation
-decodeInsert = map2 Insert
+insertDecoder : Decoder Operation
+insertDecoder = map2 Insert
   (field "word" Json.Decode.string)
   (field "retainLen" Json.Decode.int)
 
-decodeDelete : Decoder Operation
-decodeDelete = map2 Delete
+deleteDecoder : Decoder Operation
+deleteDecoder = map2 Delete
   (field "delLen" Json.Decode.int)
   (field "retainLen" Json.Decode.int)
 
-decoderOperation : Decoder Operation
-decoderOperation = oneOf [decodeInsert, decodeDelete]
+operationDecoder : Decoder Operation
+operationDecoder = oneOf [insertDecoder, deleteDecoder]
 
-decoderRevision : Decoder Int
-decoderRevision = field "revision" Json.Decode.int
+revisionDecoder : Decoder Int
+revisionDecoder = field "revision" Json.Decode.int

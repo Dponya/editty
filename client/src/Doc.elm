@@ -1,5 +1,5 @@
 port module Doc exposing
-  (init, view, update, DocMsg, Doc, subscriptions)
+  (init, view, update, DocMsg(..), Doc, subscriptions, initialModel, Textarea, Person)
 
 import Css exposing (..)
 import Html.Styled exposing (..)
@@ -10,6 +10,9 @@ import Json.Decode exposing (field, Decoder, string, map2, decodeValue)
 import Json.Encode
 import Fifo
 import Http
+import Json.Decode exposing (oneOf)
+import List.Nonempty as N
+import List.Nonempty.Ancillary exposing (prependList)
 
 -- PORTS
 
@@ -20,10 +23,18 @@ port messageReceiver : (Json.Encode.Value -> msg) -> Sub msg
 
 type alias Acknowledgement = { revision : Int, client : String }
 
+type FromServer = Ack Acknowledgement | Op OT.Operation Int
+
 acknowDecoder : Decoder Acknowledgement
 acknowDecoder = map2 Acknowledgement
   (Json.Decode.at ["acknowledgement", "revision"] Json.Decode.int)
   (Json.Decode.at ["acknowledgement", "client"] string)
+
+fromServerDecoder : Decoder FromServer
+fromServerDecoder = oneOf
+  [ Json.Decode.map Ack acknowDecoder
+  , Json.Decode.map2 Op OT.operationDecoder OT.revisionDecoder
+  ]
 
 type alias Person = { name : String }
 
@@ -51,8 +62,8 @@ type alias Textarea =
 
 type alias Payload = { payload : String, lastRevision : Int }
 
-decoderPayload : Decoder Payload
-decoderPayload = map2 Payload
+payloadDecoder : Decoder Payload
+payloadDecoder = map2 Payload
   (field "payload" Json.Decode.string)
   (field "lastRevision" Json.Decode.int)
 
@@ -61,7 +72,7 @@ decoderPayload = map2 Payload
 type DocMsg =
     Change String
   | CursorRec Int
-  | FromServer Json.Encode.Value
+  | GotFromServer Json.Encode.Value
   | ChangeClient String
   | GotDocument (Result Http.Error Payload)
   | SendClient
@@ -88,87 +99,70 @@ update msg doc = case msg of
     in ({ doc | textarea = textarea }, Cmd.none)
 
   CursorRec pos ->
-    let textarea = Textarea 
-          doc.textarea.value
-          pos
-          doc.textarea.oldValue
-        newDoc = { doc | textarea = textarea }
-    in updateDocument newDoc
+    updateCursorPos pos doc |> processOp
 
   ChangeClient newClient ->
     ({ doc | client = Person newClient }, Cmd.none)
 
   SendClient -> (doc, sendMessage (encodePerson doc.client))
 
-  FromServer val ->
-    case decodeValue acknowDecoder val of
-      Ok ack ->
-        let newDoc = { doc | lastSyncedRevision = ack.revision
-                     , sentChanges = Fifo.remove doc.sentChanges |> Tuple.second
-                     }
-        in processOp newDoc
-      Err err -> 
-        let opDecoded = decodeValue OT.decoderOperation val
-            revDecoded = decodeValue OT.decoderRevision val
-        in case (opDecoded, revDecoded) of
-                    (Ok op, Ok rev) ->
-                      let newDoc = applyFromServer op doc
-                      in  processOp ({ newDoc | lastSyncedRevision = rev })
+  GotFromServer val -> case decodeValue fromServerDecoder val of
+    Ok fromServ -> case fromServ of
+      Ack ack -> let newDoc = { doc | lastSyncedRevision = ack.revision
+                      , sentChanges = Fifo.remove doc.sentChanges |> Tuple.second
+                      }
+                  in processFromPendings newDoc
+      Op op rev -> let newDoc = applyFromServer op doc
+                   in  processFromPendings ({ newDoc | lastSyncedRevision = rev })
+    Err err -> ({ doc | errors = (Debug.toString err :: doc.errors) }, Cmd.none)
 
-                    (Err errOp2, Err errRev2) -> let _ = Debug.log "err2" (errOp2, errRev2)
-                      in (doc, Cmd.none)
-                    (Err err2, _) -> let _ = Debug.log "err2" err2 in (doc, Cmd.none)
-                    (_, Err err2) -> let _ = Debug.log "err2" err2 in (doc, Cmd.none)
-
-updateDocument : Doc -> (Doc, Cmd DocMsg)
-updateDocument doc =
-  let oldStr = doc.textarea.oldValue
-      newStr = doc.textarea.value
-      cursPos = doc.textarea.cursorPos
-      op = (constructOperation oldStr newStr cursPos)
-      newDoc = { doc | pendingChanges = Fifo.insert op doc.pendingChanges }
-      newTextarea pos = Textarea newStr pos oldStr
-      _ = Debug.log "doc in updateDocument" newDoc
-  in case op of
-      OT.Insert _ pos -> processOp ({ newDoc | textarea = newTextarea pos })
-      OT.Delete _ pos -> processOp ({ newDoc | textarea = newTextarea pos })
+updateCursorPos : Int -> Doc -> Doc
+updateCursorPos pos doc =
+  let textarea = Textarea doc.textarea.value pos doc.textarea.oldValue
+  in { doc | textarea = textarea }
 
 processOp : Doc -> (Doc, Cmd DocMsg)
 processOp doc =
-  let 
-      (removedOp, pQueue) = Fifo.remove doc.pendingChanges
+  let oldStr = doc.textarea.oldValue
+      newStr = doc.textarea.value
+      cursPos = doc.textarea.cursorPos
+      constructed = (constructOperation oldStr newStr cursPos)
+      nonEmptyPendingList = prependList
+        (Fifo.toList doc.pendingChanges) <| N.singleton constructed
+      clientName = if String.isEmpty doc.client.name
+        then "Alice" else doc.client.name
       sQueue = Fifo.toList doc.sentChanges
-  in case (removedOp, List.isEmpty sQueue) of
+  in case (nonEmptyPendingList, List.isEmpty sQueue) of
 
-      (Just (OT.Insert word pos), True) ->
-        ( { doc | pendingChanges = pQueue
-          , sentChanges = Fifo.insert (OT.Insert word pos) doc.sentChanges
+      (N.Nonempty op ops, True) ->
+        ( { doc | pendingChanges = Fifo.fromList ops
+          , sentChanges = Fifo.insert op doc.sentChanges
+          }
+        , sendMessage <| OT.encodeOperation op doc.lastSyncedRevision clientName
+        )
+
+      (N.Nonempty op ops, False) ->
+        ({ doc | pendingChanges = Fifo.fromList
+          <| N.toList (N.Nonempty op ops)
+         }
+        , Cmd.none) 
+
+processFromPendings : Doc -> (Doc, Cmd DocMsg)
+processFromPendings doc =
+  let (removedOp, pendings) = Fifo.remove doc.pendingChanges
+  in case removedOp of
+      Just op ->
+        ( { doc | pendingChanges = pendings
+          , sentChanges = Fifo.insert op doc.sentChanges
           }
         , sendMessage <|
             OT.encodeOperation
-              (OT.Insert word pos)
-              doc.lastSyncedRevision
-              (if String.isEmpty doc.client.name then "Alice" else doc.client.name)
+            op
+            doc.lastSyncedRevision
+            (if String.isEmpty doc.client.name then "Alice" else doc.client.name)
         )
-
-      (Just (OT.Delete len pos), True) ->
-        ( { doc | pendingChanges = pQueue
-          , sentChanges = Fifo.insert (OT.Delete len pos) doc.sentChanges
-          }, sendMessage <|
-                OT.encodeOperation
-                (OT.Delete len pos)
-                doc.lastSyncedRevision
-                (if String.isEmpty doc.client.name then "Alice" else doc.client.name)
-         )
-
-      -- Hold on if change is still processing on the server
-      (Just (OT.Insert _ _), False) ->
-        ( doc, Cmd.none)
-      (Just (OT.Delete _ _), False) ->
-        (doc, Cmd.none)
-
-      -- This never gonna happen
-      (Nothing, _) -> (doc, Cmd.none)
+      -- Hold on, if there's no ops at all
+      Nothing -> (doc, Cmd.none)
 
 constructOperation : String -> String -> Int -> OT.Operation
 constructOperation oldStr newStr cursPos =
@@ -177,8 +171,8 @@ constructOperation oldStr newStr cursPos =
       newContent = addedContent oldStr newStr
       insertPos = cursPos - String.length newContent
   in if String.length oldStr > String.length newStr
-      then OT.Delete deleteLength deletePos
-      else OT.Insert newContent insertPos
+      then OT.delete deleteLength deletePos
+      else OT.insert newContent insertPos
 
 addedContent : String -> String -> String
 addedContent oldString newString =
@@ -214,46 +208,9 @@ applyFromServer op doc =
 -- SUBSCRIPTIONS
 
 subscriptions : Doc -> Sub DocMsg
-subscriptions _ = messageReceiver FromServer
+subscriptions _ = messageReceiver GotFromServer
 
 -- VIEW
-styledH1 : List (Attribute msg) -> List (Html msg) -> Html msg
-styledH1 = styled h1
-  [ textAlign center
-  , color (hex "#957dad")
-  , fontFamily sansSerif
-  ]
-
-styledInput : List (Attribute msg) -> List (Html msg) -> Html msg
-styledInput = styled input
-  [ paddingTop (px 10)
-  , paddingBottom (px 10)
-  , textAlign center
-  , alignSelf center
-  , Css.width (pc 30)
-  ]
-
-styledTextarea : List (Attribute msg) -> List (Html msg) -> Html msg
-styledTextarea =
-  styled textarea
-    [ borderColor (hex "#957dad")
-    , borderWidth (px 5)
-    ]
-
-styledSection : List (Attribute msg) -> List (Html msg) -> Html msg
-styledSection =
-  styled section
-    [ padding (pct 5)
-    , paddingTop (pct 0)
-    , Css.height (vh 100)
-    ]
-
-styledFlexBox : List (Attribute msg) -> List (Html msg) -> Html msg
-styledFlexBox =
-  styled div
-    [ displayFlex
-    , justifyContent center
-    ]
 
 view : Doc -> Html DocMsg
 view doc = if not (List.isEmpty doc.errors)
@@ -297,12 +254,50 @@ viewDocument doc =
 viewTextarea : List (Attribute msg) -> List (Html msg) -> Html msg
 viewTextarea = node "cursor-position-checker"
 
+styledH1 : List (Attribute msg) -> List (Html msg) -> Html msg
+styledH1 = styled h1
+  [ textAlign center
+  , color (hex "#957dad")
+  , fontFamily sansSerif
+  ]
+
+styledInput : List (Attribute msg) -> List (Html msg) -> Html msg
+styledInput = styled input
+  [ paddingTop (px 10)
+  , paddingBottom (px 10)
+  , textAlign center
+  , alignSelf center
+  , Css.width (pc 30)
+  ]
+
+styledTextarea : List (Attribute msg) -> List (Html msg) -> Html msg
+styledTextarea =
+  styled textarea
+    [ borderColor (hex "#957dad")
+    , borderWidth (px 5)
+    ]
+
+styledSection : List (Attribute msg) -> List (Html msg) -> Html msg
+styledSection =
+  styled section
+    [ padding (pct 5)
+    , paddingTop (pct 0)
+    , Css.height (vh 100)
+    ]
+
+styledFlexBox : List (Attribute msg) -> List (Html msg) -> Html msg
+styledFlexBox =
+  styled div
+    [ displayFlex
+    , justifyContent center
+    ]
+
 -- HELP STUFF
 
 init : () -> (Doc, Cmd DocMsg)
 init _ = (initialModel
-         , Http.get { url = "https://e677-95-56-199-218.eu.ngrok.io/document"
-                    , expect = Http.expectJson GotDocument decoderPayload
+         , Http.get { url = "https://0361-95-56-199-218.eu.ngrok.io/document"
+                    , expect = Http.expectJson GotDocument payloadDecoder
                     }
          )
 
